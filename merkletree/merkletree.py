@@ -25,11 +25,16 @@ class EthashMerkleTree:
             for i in tqdm.trange(1, self.ELEMENT_AMOUNT):
                 raw_value = f.read(64)
                 self.add_node(i, raw_value)
+            self.height -= 1
             print(f'MT Tree height: {self.height}')
             print('Setting hash values')
             self.hash_nodes_multithreaded(threads)
             print('Done')
-            # TODO write to file
+            print('Get hash array')
+            hash_array = self.fill_hash_array()
+            print('write to file')
+            self.write_hash_to_file(hash_array)
+            print('Done')
     
     def hash_nodes(self, height: int, node: Optional[merkletree.node.Node], pbar: Optional[tqdm.tqdm]) -> merkletree.node.Node:
         working_list: List[merkletree.node.Node] = [self.root if node == None else node]
@@ -49,10 +54,9 @@ class EthashMerkleTree:
             own_pbar.close()
         return curr_node
     
-    def write_hash_to_file(self):
-        hash_tree = [0] * ((2 ** self.height) - 1)
+    def write_hash_to_file(self, hash_array: List[bytes]):
         with open(f'{self.file_path}_HASHES', 'wb') as f:
-            for hash in hash_tree:
+            for hash in hash_array:
                 f.write(hash)
         
     def fill_hash_array(self) -> List[bytes]:
