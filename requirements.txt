@@ -1,4 +1,3 @@
-pycrypto
-pycryptodome
 rlp
 tqdm
+git+git://github.com/thecodingshrimp/pycrypto

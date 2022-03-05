@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import List, Optional
-from Crypto.Hash import SHA3_256
+from zokrates_pycrypto.gadgets.pedersenHasher import PedersenHasher
 import rlp
 
 class Node:
@@ -17,27 +17,39 @@ class Node:
         self.value: bytes = value
         self.left_node: Optional[Node] = left_node
         self.right_node: Optional[Node] = right_node
-        self.hash: int = index
+        self.hash: bytes = b''
+        self.hasher = PedersenHasher(str(self.index))
     
     def become_branch(self) -> None:
         self.index = -1
         self.value = b''
-        self.hash = -1
+        self.hash = b''
         
-    def set_hash(self) -> int:
-        # TODO create rlp of subtree nodes and then hash?
+    def get_hash(self) -> bytes:
+        """
+        If leaf then hashes the byte representation of value.
+        If branch then concatenates left hash bytes + right hash bytes and hashes them.
+        If branch with only one child then put placeholder b'0x' instead
+
+        Raises:
+            Exception: if no branch or leaf
+
+        Returns:
+            bytes: hash of branch/leaf
+        """
+        if self.hash != b'':
+            return self.hash
+        hashing_value = b''
         if self.index > -1:
-            # return SHA3_256.new(self.value).hexdigest()
-            self.hash = self.index
-        # TODO what if only one child?
+            hashing_value = self.value
         elif self.left_node and self.right_node:
-            # return SHA3_256.new(bytes.fromhex(self.left_node.hash()) + bytes.fromhex(self.right_node.hash())).hexdigest()
-            self.hash = self.left_node.hash + self.right_node.hash
+            hashing_value = self.left_node.get_hash() + self.right_node.get_hash()
         elif self.right_node:
-            self.hash = self.right_node.hash - 1
+            hashing_value = b'0x' + self.right_node.get_hash()
         elif self.left_node:
-            self.hash = self.left_node.hash - 1
-        if self.hash > -1:
+            hashing_value = self.left_node.get_hash() + b'0x'
+        if hashing_value != b'':
+            self.hash = self.hasher.hash_bytes(hashing_value).compress()
             return self.hash
         raise Exception
     
@@ -88,11 +100,11 @@ class Node:
             current_bit = (self.index >> height) & 1
             height += 1
             if current_bit == 1:
-                left_hash = self.left_node.hash()
+                left_hash = self.left_node.hash
                 right_rlp = self.right_node.rlp_path(index, height)
-                return rlp.encode([bytes.fromhex(left_hash), right_rlp], infer_serializer=False, cache=False)
+                return rlp.encode([left_hash, right_rlp], infer_serializer=False, cache=False)
             else:
                 left_rlp = self.left_node.rlp_path(index, height)
-                right_hash = self.right_node.hash()
-                return rlp.encode([left_rlp, bytes.fromhex(right_hash)], infer_serializer=False, cache=False)
+                right_hash = self.right_node.hash
+                return rlp.encode([left_rlp, right_hash], infer_serializer=False, cache=False)
         raise Exception
