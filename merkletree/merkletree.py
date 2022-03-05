@@ -99,20 +99,31 @@ class EthashMerkleTree:
     
     def get_rlp_path(self, index: int) -> bytes:
         path: List[merkletree.node.Node] = self.get_node_path(index)
-        i = len(path) - 2
         curr_node: merkletree.node.Node = path.pop()
         rlp_path = rlp.encode(curr_node.value)
-        while len(path) > 0:
+        for i in range(len(path) - 1, 0, -1):
             curr_node = path.pop()
             current_bit: int = (index >> i) & 1
             if current_bit == 1 and curr_node.left_node:
                 rlp_path = rlp.encode([curr_node.left_node.hash, rlp_path])
             elif curr_node.right_node:
-                rlp_path = rlp.encode([rlp_path, curr_node.right_node.hash])
-            i -= 1
+                rlp_path = rlp.encode([rlp_path, curr_node.right_node.hash]) 
         return rlp_path
     
     def get_proof_path(self, index: int) -> List[int]:
         path: List[merkletree.node.Node] = self.get_node_path(index)
-        
+        proof_path: List[int] = []
+        for i in range(len(path) - 1):
+            current_bit: int = (index >> i) & 1
+            if current_bit == 1:
+                if path[i].left_node:
+                    proof_path.append(path[i].left_node.hash)
+                else:
+                    proof_path.append(0)
+            else:
+                if path[i].right_node:
+                    proof_path.append(path[i].right_node.hash)
+                else:
+                    proof_path.append(0)
+        return proof_path
         
