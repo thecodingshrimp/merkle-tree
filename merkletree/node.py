@@ -22,7 +22,7 @@ class Node:
     
     def become_branch(self) -> None:
         self.index = -1
-        self.value = b''
+        self.value = b'0x'
         self.hash = b''
         
     def get_hash(self) -> bytes:
