@@ -1,18 +1,16 @@
 from multiprocessing import Pool
 from typing import List
-import merkletree.node
-import rlp
 import tqdm
 import pathlib
-import copy
 import numpy as np
 from zokrates_pycrypto.gadgets.pedersenHasher import PedersenHasher
 
 class EthashMerkleTree:
     def __init__(self, file_path: str, element_size: int = 64, threads: int = 8) -> None:
+        self.HASHING_SEED = 'EthashMerkleTree'
         self.FILE_SIZE = pathlib.Path(file_path).stat().st_size - 8
-        # self.ELEMENT_AMOUNT = self.FILE_SIZE // element_size
-        self.ELEMENT_AMOUNT = 8
+        self.ELEMENT_AMOUNT = self.FILE_SIZE // element_size
+        # self.ELEMENT_AMOUNT = 32
         self.find_mt_height()
         self.ELEMENT_SIZE = element_size
         self.file_path = file_path
@@ -48,30 +46,31 @@ class EthashMerkleTree:
         self.height = curr_height + 1
         return self.height
     
-    def hash_values_in_mt(self, start_index: int, height: int) -> List[bytes]:
-        working_list: List[int] = np.array([start_index])
-        own_pbar = tqdm.tqdm(total=((2 ** (self.height - height)) - 1))
-        curr_index = working_list[0]
-        num_hashed = 0
-        hasher = PedersenHasher('hash_values_in_mt')
-        while len(working_list) > 0:
-            curr_index = working_list[-1]
-            if curr_index * 2 + 1 < len(self.hash_array) and self.hash_array[curr_index * 2 + 1] == b'0x':
-                working_list = np.append(working_list, curr_index * 2 + 1)
-            elif curr_index * 2 + 2 < len(self.hash_array) and self.hash_array[curr_index * 2 + 2] == b'0x':
-                working_list = np.append(working_list, curr_index * 2 + 2)
-            else:
-                # only checking left child since it is expected that the right child will be out of bounds too.
-                if curr_index * 2 + 1 < len(self.hash_array):
-                    self.hash_array[curr_index] = hasher.hash_bytes(self.hash_array[curr_index * 2 + 1] + self.hash_array[curr_index * 2 + 2]).compress()
-                else:
-                    self.hash_array[curr_index] = hasher.hash_bytes(self.mt_array[curr_index]).compress()
-                working_list = np.delete(working_list, len(working_list) - 1)
-                num_hashed += 1
-                if num_hashed >= 10 or self.ELEMENT_AMOUNT < 100:
-                    own_pbar.update(num_hashed)
-                    num_hashed = 0
-        own_pbar.close()
+    def hash_values_in_mt(self, thread: int, leaf_amount: int, height: int) -> List[bytes]:
+        total_element_num = (((2 ** self.height) - 1) - ((2 ** height) - 1)) // ((2 ** (self.height - 1)) // leaf_amount)
+        hashed = 0
+        hasher = PedersenHasher(self.HASHING_SEED)
+        with tqdm.tqdm(total=total_element_num) as pbar:
+            # initial walk through for the leafs
+            curr_index = (2 ** (self.height - 1)) + (thread * leaf_amount) - 1
+            for i in range(leaf_amount):
+                self.hash_array[curr_index + i] = hasher.hash_bytes(self.mt_array[curr_index + i]).compress()
+                hashed += 1
+                if total_element_num < 100 or hashed % 10 == 0:
+                    pbar.update(hashed)
+                    hashed = 0
+            
+            # inside of the tree
+            curr_node_amount = leaf_amount
+            for i in range(self.height - 1, height, -1):
+                curr_node_amount = curr_node_amount // 2
+                curr_index = (2 ** (i - 1)) + (thread * curr_node_amount) - 1
+                for j in range(curr_node_amount):
+                    self.hash_array[curr_index + j] = hasher.hash_bytes(self.hash_array[((curr_index + j) * 2) + 1] + self.hash_array[((curr_index + j) * 2) + 2]).compress()
+                    hashed += 1
+                    if total_element_num < 100 or hashed % 10 == 0:
+                        pbar.update(hashed)
+                        hashed = 0
         return self.hash_array
     
     def write_hash_to_file(self, hash_array: List[bytes]):
@@ -104,7 +103,7 @@ class EthashMerkleTree:
             threads (int): number of threads in parallel
         """
         if threads <= 1:
-            return self.hash_values_in_mt(0, 0)
+            return self.hash_values_in_mt(0, 2 ** (self.height - 1), 0)
         
         multiple_of_two = 1
         height = 0
@@ -113,21 +112,11 @@ class EthashMerkleTree:
             multiple_of_two = 2 ** height
         args = []
         for j in range(threads):
-            curr_index = 0
-            for k in range(height):
-                current_bit = (j >> k) & 1
-                if current_bit == 1 and curr_index * 2 + 2 < self.mt_array_size:
-                    # go deeper into right branch
-                    curr_index = curr_index * 2 + 2
-                elif curr_index * 2 + 1 < self.mt_array_size:
-                    # left branch
-                    curr_index = curr_index * 2 + 1
-                else:
-                    break
-            args.append((curr_index, height))
+            args.append((j, (2 ** (self.height - 1)) // threads, height))
         with Pool(threads) as p:
             answer = p.starmap(self.hash_values_in_mt, args)
 
+        # TODO optimize
         for j in range(threads):
             curr_index = 0
             for k in range(height):
@@ -143,7 +132,15 @@ class EthashMerkleTree:
             self.fill_sub_hash_array(curr_index, answer[j])
             
         print('Hashing the rest without multithreading...')
-        self.hash_values_in_mt(0, 0)
+        # initial walk through for the leafs
+        hasher = PedersenHasher(self.HASHING_SEED)
+        # hash a 64 byte value to set segments inside pedersen lib
+        with tqdm.tqdm(total=2 ** (height) - 1) as pbar:
+            for i in range(height, 0, -1):
+                curr_index = (2 ** (i - 1)) - 1
+                for j in range(2 ** (i - 1)):
+                    self.hash_array[curr_index + j] = hasher.hash_bytes(self.hash_array[((curr_index + j) * 2) + 1] + self.hash_array[((curr_index + j) * 2) + 2]).compress()
+                    pbar.update(1)
         print('Done.')
     
     def add_value(self, index: int, value: bytearray) -> None:
@@ -179,19 +176,6 @@ class EthashMerkleTree:
                 curr_index = curr_index * 2 + 1
             i += 1
         return path
-    
-    def get_rlp_path(self, index: int) -> bytes:
-        path: List[merkletree.node.Node] = self.get_node_path(index)
-        curr_node: merkletree.node.Node = path.pop()
-        rlp_path = rlp.encode(curr_node.value)
-        for i in range(len(path) - 1, 0, -1):
-            curr_node = path.pop()
-            current_bit: int = (index >> i) & 1
-            if current_bit == 1 and curr_node.left_node:
-                rlp_path = rlp.encode([curr_node.left_node.hash, rlp_path])
-            elif curr_node.right_node:
-                rlp_path = rlp.encode([rlp_path, curr_node.right_node.hash]) 
-        return rlp_path
 
     def get_proof_path(self, index: int) -> List[bytes]:
         """Creates witness for an index
