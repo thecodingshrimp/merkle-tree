@@ -45,9 +45,9 @@ class Node:
         elif self.left_node and self.right_node:
             hashing_value = self.left_node.get_hash() + self.right_node.get_hash()
         elif self.right_node:
-            hashing_value = b'0x' + self.right_node.get_hash()
+            hashing_value = b'\xa8\x93\xf1\xfa\x1fG\xfd3>\x97\x13\xb38\xbb\xbf\x05?c\x01\n\xd7\xae\xcf\xf5\x84-\x96K\r\xd2\xb8X' + self.right_node.get_hash()
         elif self.left_node:
-            hashing_value = self.left_node.get_hash() + b'0x'
+            hashing_value = self.left_node.get_hash() + b'\xa8\x93\xf1\xfa\x1fG\xfd3>\x97\x13\xb38\xbb\xbf\x05?c\x01\n\xd7\xae\xcf\xf5\x84-\x96K\r\xd2\xb8X'
         if hashing_value != b'':
             self.hash = self.hasher.hash_bytes(hashing_value).compress()
             return self.hash

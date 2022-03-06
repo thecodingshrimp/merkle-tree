@@ -4,12 +4,14 @@ import merkletree.node
 import rlp
 import tqdm
 import pathlib
+import copy
 from zokrates_pycrypto.gadgets.pedersenHasher import PedersenHasher
 
 class EthashMerkleTree:
     def __init__(self, file_path: str, element_size: int = 64, threads: int = 8) -> None:
         self.FILE_SIZE = pathlib.Path(file_path).stat().st_size - 8
         self.ELEMENT_AMOUNT = self.FILE_SIZE // element_size
+        # self.ELEMENT_AMOUNT = 32
         self.ELEMENT_SIZE = element_size
         self.file_path = file_path
         with open(file_path, 'rb') as f:
@@ -25,7 +27,6 @@ class EthashMerkleTree:
             for i in tqdm.trange(1, self.ELEMENT_AMOUNT):
                 raw_value = f.read(64)
                 self.add_node(i, raw_value)
-            self.height -= 1
             print(f'MT Tree height: {self.height}')
             print('Setting hash values')
             self.hash_nodes_multithreaded(threads)
@@ -40,6 +41,7 @@ class EthashMerkleTree:
         working_list: List[merkletree.node.Node] = [self.root if node == None else node]
         own_pbar = tqdm.tqdm(total=((2 ** (self.height - height)) - 1)) if pbar == None else pbar
         curr_node = working_list[0]
+        num_hashed = 0
         while len(working_list) > 0:
             curr_node = working_list[-1]
             if curr_node.left_node and curr_node.left_node.hash == b'':
@@ -49,7 +51,10 @@ class EthashMerkleTree:
             else:
                 curr_node.get_hash()
                 curr_node = working_list.pop()
-                own_pbar.update(1)
+                num_hashed += 1
+                if num_hashed >= 10 or self.ELEMENT_AMOUNT < 100:
+                    own_pbar.update(num_hashed)
+                    num_hashed = 0
         if pbar == None:
             own_pbar.close()
         return curr_node
@@ -61,23 +66,25 @@ class EthashMerkleTree:
         
     def fill_hash_array(self) -> List[bytes]:
         working_list: List[merkletree.node.Node] = [self.root]
-        hash_tree: List[bytes] = [b'0'] * ((2 ** self.height) - 1)
+        hash_tree: List[bytes] = [b'0x'] * ((2 ** self.height) - 1)
         index = 0
         curr_node = self.root
         with tqdm.tqdm(total=((2 ** self.height) - 1)) as pbar:
             while len(working_list) > 0:
                 curr_node = working_list[-1]
                 hash_tree[index] = curr_node.hash
-                if curr_node.left_node and curr_node.left_node.hash != b'':
+                if index * 2 + 1 < len(hash_tree) and hash_tree[index * 2 + 1] == b'0x' and curr_node.left_node and curr_node.left_node.hash != b'':
                     working_list.append(curr_node.left_node)
                     index = index * 2 + 1
-                elif curr_node.right_node and curr_node.right_node.hash == b'':
+                elif index * 2 + 2 < len(hash_tree) and hash_tree[index * 2 + 2] == b'0x' and curr_node.right_node and curr_node.right_node.hash != b'':
                     working_list.append(curr_node.right_node)
                     index = index * 2 + 2
                 else:
                     working_list.pop()
                     index = index // 2 if index % 2 == 1 else (index // 2) - 1
                     pbar.update(1)
+        hasher = PedersenHasher('Hasher')
+        hash_tree = [b'\xa8\x93\xf1\xfa\x1fG\xfd3>\x97\x13\xb38\xbb\xbf\x05?c\x01\n\xd7\xae\xcf\xf5\x84-\x96K\r\xd2\xb8X' if hashed == b'0x' else hashed for hashed in hash_tree]
         return hash_tree
  
     def hash_nodes_multithreaded(self, threads: int) -> None:
@@ -86,6 +93,9 @@ class EthashMerkleTree:
         Args:
             threads (int): number of threads in parallel
         """
+        if threads <= 1:
+            return self.hash_nodes(0, None, None)
+        
         multiple_of_two = 1
         height = 0
         while multiple_of_two < threads:
@@ -126,12 +136,14 @@ class EthashMerkleTree:
                     curr_node = curr_node.left_node
                 else:
                     break
-            current_bit = (j >> height) & 1
+            current_bit = (j >> (height - 1)) & 1
             if current_bit == 1:
                 curr_node.right_node = answer[j]
             else:
                 curr_node.left_node = answer[j]
+        print('Hashing the rest without multithreading...')
         self.hash_nodes(0, None, None)
+        print('Done.')
     
     def add_node(self, index: int, value: bytes) -> None:
         inserted: bool = False
@@ -145,7 +157,7 @@ class EthashMerkleTree:
                     # new value for existing leaf
                     curr_node.value = value
                     inserted = True
-                    continue
+                    break
                 else:
                     # make branch out of leaf
                     if (curr_node.index >> i) & 1 == 1:
@@ -168,8 +180,9 @@ class EthashMerkleTree:
                 inserted = True
             i += 1
 
-        if i > self.height:
-            self.height = i
+        # + 1 cause root is height 1
+        if i + 1 > self.height:
+            self.height = i + 1
                 
     def get_node_path(self, index: int) -> List[merkletree.node.Node]:
         path: List[merkletree.node.Node] = []
@@ -201,8 +214,7 @@ class EthashMerkleTree:
             elif curr_node.right_node:
                 rlp_path = rlp.encode([rlp_path, curr_node.right_node.hash]) 
         return rlp_path
-    
-    #TODO function that gets proof path for value?
+
     def get_proof_path(self, index: int) -> List[bytes]:
         """Creates witness for an index
 
@@ -217,22 +229,22 @@ class EthashMerkleTree:
             Does not contain the leaf node itself.
         """
         path: List[merkletree.node.Node] = self.get_node_path(index)
-        proof_path: List[bytes] = []
+        proof_path: List[bytes] = [path[0].hash]
         print(f'Building proof for index {index}...')
         hasher = PedersenHasher('get_proof_path_hasher')
-        for i in tqdm.trange(len(path) - 1, -1, -1):
+        for i in tqdm.trange(len(path) - 1):
             current_bit: int = (index >> i) & 1
             current_node = path[i]
             if current_bit == 1:
                 if current_node.left_node:
-                    proof_path = [current_node.left_node.get_hash()] + proof_path
+                    proof_path.append(current_node.left_node.hash)
                 else:
-                    proof_path = [hasher.hash_bytes(b'0x')] + proof_path
+                    proof_path.append(b'\xa8\x93\xf1\xfa\x1fG\xfd3>\x97\x13\xb38\xbb\xbf\x05?c\x01\n\xd7\xae\xcf\xf5\x84-\x96K\r\xd2\xb8X')
             else:
                 if current_node.right_node:
-                    proof_path = [current_node.right_node.get_hash()] + proof_path
+                    proof_path.append(current_node.right_node.hash)
                 else:
-                    proof_path = [hasher.hash_bytes(b'0x')] + proof_path
+                    proof_path.append(b'\xa8\x93\xf1\xfa\x1fG\xfd3>\x97\x13\xb38\xbb\xbf\x05?c\x01\n\xd7\xae\xcf\xf5\x84-\x96K\r\xd2\xb8X')
         print('Done.')
         return proof_path
     
