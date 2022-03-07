@@ -6,11 +6,11 @@ import numpy as np
 from zokrates_pycrypto.gadgets.pedersenHasher import PedersenHasher
 
 class EthashMerkleTree:
-    def __init__(self, file_path: str, element_size: int = 64, threads: int = 8) -> None:
-        self.HASHING_SEED = 'EthashMerkleTree'
+    def __init__(self, file_path: str, seed: str, element_size: int = 64, threads: int = 8) -> None:
+        self.HASHING_SEED = seed
         self.FILE_SIZE = pathlib.Path(file_path).stat().st_size - 8
-        self.ELEMENT_AMOUNT = self.FILE_SIZE // element_size
-        # self.ELEMENT_AMOUNT = 32
+        # self.ELEMENT_AMOUNT = self.FILE_SIZE // element_size
+        self.ELEMENT_AMOUNT = 32
         self.find_mt_height()
         self.ELEMENT_SIZE = element_size
         self.file_path = file_path
@@ -81,18 +81,21 @@ class EthashMerkleTree:
     def fill_hash_array(self) -> List[bytes]:
         return [b'0x'] * ((2 ** self.height) - 1)
     
-    def fill_sub_hash_array(self, start_index: int, other_array: List[bytes]) -> List[bytes]:
-        working_list: List[int] = np.array([start_index])
-        while len(working_list) > 0:
-            curr_index = working_list[-1]
-            if curr_index * 2 + 1 < len(self.hash_array) and self.hash_array[curr_index * 2 + 1] == b'0x':
-                working_list = np.append(working_list, curr_index * 2 + 1)
-            elif curr_index * 2 + 2 < len(self.hash_array) and self.hash_array[curr_index * 2 + 2] == b'0x':
-                working_list = np.append(working_list, curr_index * 2 + 2)
-            else:
-                # only checking left child since it is expected that the right child will be out of bounds too.
-                self.hash_array[curr_index] = other_array[curr_index]
-                working_list = np.delete(working_list, len(working_list) - 1)
+    def fill_sub_hash_array(self, thread: int, leaf_amount: int, height: int, other_array: List[bytes]) -> List[bytes]:
+        total_element_num = (((2 ** self.height) - 1) - ((2 ** height) - 1)) // ((2 ** (self.height - 1)) // leaf_amount)
+        with tqdm.tqdm(total=total_element_num) as pbar:
+            hashed = 0
+            curr_node_amount = leaf_amount
+            for i in range(self.height, height, -1):
+                curr_index = (2 ** (i - 1)) + (thread * curr_node_amount) - 1
+                for j in range(curr_node_amount):
+                    self.hash_array[curr_index + j] = other_array[curr_index + j]
+                    hashed += 1
+                    if total_element_num < 100 or hashed % 10 == 0:
+                        pbar.update(hashed)
+                        hashed = 0
+                curr_node_amount = curr_node_amount // 2
+                
         return self.hash_array
         
  
@@ -116,21 +119,11 @@ class EthashMerkleTree:
         with Pool(threads) as p:
             print(f'Starting threads processing { (2 ** (self.height - 1)) // threads} elements each')
             answer = p.starmap(self.hash_values_in_mt, args)
+
         print('Merging the subtrees from threads together')
-        # TODO optimize
         for j in range(threads):
-            curr_index = 0
-            for k in range(height):
-                current_bit = (j >> k) & 1
-                if current_bit == 1 and curr_index * 2 + 2 < self.mt_array_size:
-                    # go deeper into right branch
-                    curr_index = curr_index * 2 + 2
-                elif curr_index * 2 + 1 < self.mt_array_size:
-                    # left branch
-                    curr_index = curr_index * 2 + 1
-                else:
-                    break
-            self.fill_sub_hash_array(curr_index, answer[j])
+            print(f'Merging thread {j}')
+            self.fill_sub_hash_array(j, (2 ** (self.height - 1)) // threads, height, answer[j])
             
         print('Hashing the rest without multithreading...')
         # initial walk through for the leafs

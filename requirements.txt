@@ -1,3 +1,4 @@
 rlp
 tqdm
 git+git://github.com/thecodingshrimp/pycrypto
+git+git://github.com/thecodingshrimp/ethash
