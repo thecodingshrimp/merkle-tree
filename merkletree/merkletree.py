@@ -9,8 +9,8 @@ class EthashMerkleTree:
     def __init__(self, file_path: str, seed: str, element_size: int = 64, threads: int = 8) -> None:
         self.HASHING_SEED = seed
         self.FILE_SIZE = pathlib.Path(file_path).stat().st_size - 8
-        # self.ELEMENT_AMOUNT = self.FILE_SIZE // element_size
-        self.ELEMENT_AMOUNT = 32
+        self.ELEMENT_AMOUNT = self.FILE_SIZE // element_size
+        # self.ELEMENT_AMOUNT = 32
         self.find_mt_height()
         self.ELEMENT_SIZE = element_size
         self.file_path = file_path
