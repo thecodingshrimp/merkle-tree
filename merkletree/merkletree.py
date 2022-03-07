@@ -104,7 +104,7 @@ class EthashMerkleTree:
         """
         if threads <= 1:
             return self.hash_values_in_mt(0, 2 ** (self.height - 1), 0)
-        
+
         multiple_of_two = 1
         height = 0
         while multiple_of_two < threads:
@@ -114,8 +114,9 @@ class EthashMerkleTree:
         for j in range(threads):
             args.append((j, (2 ** (self.height - 1)) // threads, height))
         with Pool(threads) as p:
+            print(f'Starting threads processing { (2 ** (self.height - 1)) // threads} elements each')
             answer = p.starmap(self.hash_values_in_mt, args)
-
+        print('Merging the subtrees from threads together')
         # TODO optimize
         for j in range(threads):
             curr_index = 0
@@ -143,7 +144,7 @@ class EthashMerkleTree:
                     pbar.update(1)
         print('Done.')
     
-    def add_value(self, index: int, value: bytearray) -> None:
+    def add_value(self, index: int, value: bytes) -> None:
         inserted: bool = False
         i = 0
         curr_index = 0
