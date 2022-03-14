@@ -10,11 +10,12 @@ class EthashMerkleTree:
         self.HASHING_SEED = seed
         self.FILE_SIZE = pathlib.Path(file_path).stat().st_size - 8
         # self.ELEMENT_AMOUNT = self.FILE_SIZE // element_size
-        self.ELEMENT_AMOUNT = 32
+        self.ELEMENT_AMOUNT = 64
         self.find_mt_height()
         self.ELEMENT_SIZE = element_size
         self.file_path = file_path
-        print(f'#(Elements) = {self.ELEMENT_AMOUNT}')
+        print(f'#(Elements)/#Leafs = {self.ELEMENT_AMOUNT}/{2 ** (self.height - 1)}')
+        print(f'#nodes = {(2 ** self.height) - 1}')
         print(f'MT Tree height: {self.height}')
         with open(file_path, 'rb') as f:
             # skip 'magic' number 
@@ -81,20 +82,12 @@ class EthashMerkleTree:
         return [b'0x'] * ((2 ** self.height) - 1)
     
     def fill_sub_hash_array(self, thread: int, leaf_amount: int, height: int, other_array: List[bytes]) -> List[bytes]:
-        total_element_num = (((2 ** self.height) - 1) - ((2 ** height) - 1)) // ((2 ** (self.height - 1)) // leaf_amount)
-        with tqdm.tqdm(total=total_element_num) as pbar:
-            hashed = 0
-            curr_node_amount = leaf_amount
-            for i in range(self.height, height, -1):
-                curr_index = (2 ** (i - 1)) + (thread * curr_node_amount) - 1
-                for j in range(curr_node_amount):
-                    self.hash_array[curr_index + j] = other_array[curr_index + j]
-                    hashed += 1
-                    if total_element_num < 100 or hashed % 10 == 0:
-                        pbar.update(hashed)
-                        hashed = 0
-                curr_node_amount = curr_node_amount // 2
-                
+        curr_node_amount = leaf_amount
+        for i in range(self.height, height, -1):
+            curr_index = (2 ** (i - 1)) + (thread * curr_node_amount) - 1
+            for j in range(curr_node_amount):
+                self.hash_array[curr_index + j] = other_array[curr_index + j]
+            curr_node_amount = curr_node_amount // 2
         return self.hash_array
         
  
@@ -132,7 +125,6 @@ class EthashMerkleTree:
             self.fill_sub_hash_array(j, (2 ** (self.height - 1)) // threads, height, answer[j])
             
         print('Hashing the rest without multithreading...')
-        # initial walk through for the leafs
         hasher = PedersenHasher(self.HASHING_SEED, segments=171)
         # hash a 64 byte value to set segments inside pedersen lib
         with tqdm.tqdm(total=2 ** (height) - 1) as pbar:
