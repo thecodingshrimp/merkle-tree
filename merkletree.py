@@ -2,15 +2,15 @@ from multiprocessing import Pool
 from typing import List
 import tqdm
 import pathlib
-import numpy as np
+import os
 from zokrates_pycrypto.gadgets.pedersenHasher import PedersenHasher
 
 class EthashMerkleTree:
     def __init__(self, file_path: str, seed: str, element_size: int = 64, threads: int = 8) -> None:
         self.HASHING_SEED = seed
         self.FILE_SIZE = pathlib.Path(file_path).stat().st_size - 8
-        self.ELEMENT_AMOUNT = self.FILE_SIZE // element_size
-        # self.ELEMENT_AMOUNT = 32
+        # self.ELEMENT_AMOUNT = self.FILE_SIZE // element_size
+        self.ELEMENT_AMOUNT = 32
         self.find_mt_height()
         self.ELEMENT_SIZE = element_size
         self.file_path = file_path
@@ -19,11 +19,10 @@ class EthashMerkleTree:
         with open(file_path, 'rb') as f:
             # skip 'magic' number 
             f.read(8)
-
             # initiate parent (Node) with first entry
             print('Building tree...')
             print('Creating mt array')
-            self.mt_array = [b'0'] * ((2 ** self.height) - 1)
+            self.mt_array: list = [b'0'] * ((2 ** self.height) - 1)
             self.mt_array_size = len(self.mt_array)
             for i in tqdm.trange(0, self.ELEMENT_AMOUNT):
                 raw_value = f.read(64)
@@ -49,7 +48,7 @@ class EthashMerkleTree:
     def hash_values_in_mt(self, thread: int, leaf_amount: int, height: int) -> List[bytes]:
         total_element_num = (((2 ** self.height) - 1) - ((2 ** height) - 1)) // ((2 ** (self.height - 1)) // leaf_amount)
         hashed = 0
-        hasher = PedersenHasher(self.HASHING_SEED)
+        hasher = PedersenHasher(self.HASHING_SEED, segments=171)
         with tqdm.tqdm(total=total_element_num) as pbar:
             # initial walk through for the leafs
             curr_index = (2 ** (self.height - 1)) + (thread * leaf_amount) - 1
@@ -100,11 +99,18 @@ class EthashMerkleTree:
         
  
     def hash_nodes_multithreaded(self, threads: int) -> None:
+        # TODO optimize for non-full binary trees e.g. don't hash the value of zero over and over again + what to do with empty subtrees?
         """Executes hashing in parallel. Assumes threads to be a multiple of 2.
 
         Args:
             threads (int): number of threads in parallel
         """
+        if os.path.exists(f'{self.file_path}_HASHES'):
+            hash_amount = pathlib.Path(f'{self.file_path}_HASHES').stat().st_size // 32
+            with open(f'{self.file_path}_HASHES', 'rb') as f:
+                self.hash_array = [f.read(32) for _ in range(hash_amount)]
+            return
+
         if threads <= 1:
             return self.hash_values_in_mt(0, 2 ** (self.height - 1), 0)
 
@@ -117,7 +123,7 @@ class EthashMerkleTree:
         for j in range(threads):
             args.append((j, (2 ** (self.height - 1)) // threads, height))
         with Pool(threads) as p:
-            print(f'Starting threads processing { (2 ** (self.height - 1)) // threads} elements each')
+            print(f'Starting threads processing { ((2 ** (self.height)) - 1) // threads} elements each')
             answer = p.starmap(self.hash_values_in_mt, args)
 
         print('Merging the subtrees from threads together')
@@ -127,7 +133,7 @@ class EthashMerkleTree:
             
         print('Hashing the rest without multithreading...')
         # initial walk through for the leafs
-        hasher = PedersenHasher(self.HASHING_SEED)
+        hasher = PedersenHasher(self.HASHING_SEED, segments=171)
         # hash a 64 byte value to set segments inside pedersen lib
         with tqdm.tqdm(total=2 ** (height) - 1) as pbar:
             for i in range(height, 0, -1):
@@ -138,59 +144,70 @@ class EthashMerkleTree:
         print('Done.')
     
     def add_value(self, index: int, value: bytes) -> None:
-        inserted: bool = False
-        i = 0
+        """Adding value depending on their index. Starting with the highest bit to compare which way to go.
+
+        Args:
+            index (int):
+            value (bytes): little endian
+        """
+        # looking at highest relevant bit from index at first.
+        i = self.height - 2
         curr_index = 0
-        while not inserted:
+        for i in range(self.height - 2, -1, -1):
             current_bit = (index >> i) & 1
-            if current_bit == 1 and curr_index * 2 + 2 < self.mt_array_size:
+            if current_bit == 1:
                 # go deeper into right branch
                 curr_index = curr_index * 2 + 2
-            elif curr_index * 2 + 1 < self.mt_array_size:
+            else:
                 # left branch
                 curr_index = curr_index * 2 + 1
-            else:
-                self.mt_array[curr_index] = value
-                inserted = True
-            i += 1
+        self.mt_array[curr_index] = value
                 
-    def get_node_path(self, index: int) -> List[int]:
-        path: List[int] = []
+    def get_node_path(self, value: int or bytes) -> List[int]:
+        path: List[int] = [0]
+        index: int
+        if type(value) == bytes:
+            # its a value
+            index = self.get_index(value)
+        else:
+            index = value
+        
         curr_index = 0
-        path_found: bool = False
         i = 0
-        while not path_found:
+        for i in range(self.height - 1):
             current_bit = (index >> i) & 1
-            path.append(curr_index)
-            if curr_index * 2 + 1 >= len(self.mt_array):
-                path_found = True
-            elif current_bit == 1:
+            if current_bit == 1:
                 curr_index = curr_index * 2 + 2
             else:
                 curr_index = curr_index * 2 + 1
-            i += 1
+            path.append(curr_index)
         return path
 
-    def get_proof_path(self, index: int) -> List[bytes]:
-        """Creates witness for an index
+    def get_proof_path(self, value: int or bytes) -> List[bytes]:
+        """Creates witness for an index or value
 
         Args:
             index (int): index
 
         Returns:
             List[bytes]: list of hashes from the other branch on each height
-            -> e.g. on height 2, the index bit is 0 and therefore the path 
-            to the value leaf would go down the left branch. This proof list
-            would contain the hash of the right branch.
-            Does not contain the leaf node itself.
+            -> e.g. Wanna get proof of value A:
+                               B
+                              / \ 
+                             C   D
+                            / \ 
+                           A   E  
+            You would get [B, D, E]
         """
-        path: List[int] = self.get_node_path(index)
-        proof_path: List[bytes] = []
-        print(f'Building proof for index {index}...')
-        for i in tqdm.trange(len(path)):
-            proof_path.append(self.hash_array[path[i]])
+        path: List[int] = self.get_node_path(value)
+        print(f'Building proof for {"index" if type(value) == int else "value"} {value}...')
+        proof_path: List[bytes] = [self.hash_array[0]] + [self.hash_array[node_index - 1] if node_index % 2 == 0 else self.hash_array[node_index + 1] for node_index in path[1:]]
         print('Done.')
         return proof_path
     
-    # TODO function that gets path for a specific value
-    # TODO funciton that gets index for a specific value
+    def get_value(self, index: int) -> bytes:
+        path: List[int] = self.get_node_path(index)
+        return self.mt_array[path[-1]]
+    
+    def get_index(self, value: bytes) -> int:
+        return self.mt_array.index(value, len(self.mt_array) - self.ELEMENT_AMOUNT, len(self.mt_array)) - (self.ELEMENT_AMOUNT - 1)
