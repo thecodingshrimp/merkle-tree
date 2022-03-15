@@ -6,7 +6,6 @@ setup(
     py_modules=['merkletree'],
     packages=find_packages(),
     install_requires=[
-        'rlp',
         'tqdm',
         'zokrates_pycrypto@git+git://github.com/thecodingshrimp/pycrypto',
         'ethash@git+git://github.com/thecodingshrimp/ethash'

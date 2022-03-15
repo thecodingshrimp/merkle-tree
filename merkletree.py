@@ -5,12 +5,39 @@ import pathlib
 import os
 from zokrates_pycrypto.gadgets.pedersenHasher import PedersenHasher
 
+class EthashMerkleProof:
+    def __init__(self, proof_path: List[bytes], value: bytes, index: int, seed: str) -> None:
+        self.proof_path = proof_path
+        self.value = value
+        self.index = index
+        self.hasher = PedersenHasher(seed, 171)
+        
+    def validate(self) -> bool:
+        curr_hash = self.hasher.hash_bytes(self.value).compress()
+        for i in range(len(self.proof_path) - 1):
+            current_bit = (self.index >> i) & 1
+            if current_bit == 1:
+                curr_hash = self.hasher.hash_bytes(self.proof_path.pop() + curr_hash).compress()
+            else:
+                curr_hash = self.hasher.hash_bytes(curr_hash + self.proof_path.pop()).compress()
+        return curr_hash == self.proof_path[0]
+
 class EthashMerkleTree:
     def __init__(self, file_path: str, seed: str, element_size: int = 64, threads: int = 8) -> None:
+        """_summary_
+
+        Args:
+            file_path (str): _description_
+            seed (str): first 8 bytes of the seed
+            element_size (int, optional): byte size of each element. Defaults to 64.
+            threads (int, optional): threads to use to build the hashed merkle tree. Defaults to 8.
+        """
         self.HASHING_SEED = seed
         self.FILE_SIZE = pathlib.Path(file_path).stat().st_size - 8
-        # self.ELEMENT_AMOUNT = self.FILE_SIZE // element_size
-        self.ELEMENT_AMOUNT = 64
+        self.HASHED_NULL_VALUE = b'\x17`\x8c\xa2d\xc1\xeb\xd3\xb7L\xcc[\xc8\x18J\xfc\x90\xab\xe5\x90\xd3\xe0\x91ZR9}\x12\xba\x8cS\xa3'
+        self.NULL_VALUE = b'0x'
+        self.ELEMENT_AMOUNT = self.FILE_SIZE // element_size
+        # self.ELEMENT_AMOUNT = 64
         self.find_mt_height()
         self.ELEMENT_SIZE = element_size
         self.file_path = file_path
@@ -23,12 +50,12 @@ class EthashMerkleTree:
             # initiate parent (Node) with first entry
             print('Building tree...')
             print('Creating mt array')
-            self.mt_array: list = [b'0'] * ((2 ** self.height) - 1)
+            self.mt_array: List[bytes] = self.fill_mt_array()
             self.mt_array_size = len(self.mt_array)
             for i in tqdm.trange(0, self.ELEMENT_AMOUNT):
                 raw_value = f.read(64)
                 self.add_value(i, raw_value)
-            self.hash_array = self.fill_hash_array()
+            self.hash_array: List[bytes] = self.fill_hash_array()
             print('Setting hash values')
             self.hash_nodes_multithreaded(threads)
             print('Done')
@@ -54,7 +81,9 @@ class EthashMerkleTree:
             # initial walk through for the leafs
             curr_index = (2 ** (self.height - 1)) + (thread * leaf_amount) - 1
             for i in range(leaf_amount):
-                self.hash_array[curr_index + i] = hasher.hash_bytes(self.mt_array[curr_index + i]).compress()
+                value = self.mt_array[curr_index + i]
+                if value != self.NULL_VALUE:
+                    self.hash_array[curr_index + i] = hasher.hash_bytes(self.mt_array[curr_index + i]).compress()
                 hashed += 1
                 if total_element_num < 100 or hashed % 10 == 0:
                     pbar.update(hashed)
@@ -66,7 +95,10 @@ class EthashMerkleTree:
                 curr_node_amount = curr_node_amount // 2
                 curr_index = (2 ** (i - 1)) + (thread * curr_node_amount) - 1
                 for j in range(curr_node_amount):
-                    self.hash_array[curr_index + j] = hasher.hash_bytes(self.hash_array[((curr_index + j) * 2) + 1] + self.hash_array[((curr_index + j) * 2) + 2]).compress()
+                    left_hash = self.hash_array[((curr_index + j) * 2) + 1]
+                    right_hash = self.hash_array[((curr_index + j) * 2) + 2]
+                    if left_hash != self.HASHED_NULL_VALUE or right_hash != self.HASHED_NULL_VALUE:
+                        self.hash_array[curr_index + j] = hasher.hash_bytes(left_hash + right_hash).compress()
                     hashed += 1
                     if total_element_num < 100 or hashed % 10 == 0:
                         pbar.update(hashed)
@@ -79,7 +111,10 @@ class EthashMerkleTree:
                 f.write(hash)
         
     def fill_hash_array(self) -> List[bytes]:
-        return [b'0x'] * ((2 ** self.height) - 1)
+        return [self.HASHED_NULL_VALUE] * ((2 ** self.height) - 1)
+    
+    def fill_mt_array(self) -> List[bytes]:
+        return [self.NULL_VALUE] * ((2 ** self.height) - 1)
     
     def fill_sub_hash_array(self, thread: int, leaf_amount: int, height: int, other_array: List[bytes]) -> List[bytes]:
         curr_node_amount = leaf_amount
@@ -121,7 +156,6 @@ class EthashMerkleTree:
 
         print('Merging the subtrees from threads together')
         for j in range(threads):
-            print(f'Merging thread {j}')
             self.fill_sub_hash_array(j, (2 ** (self.height - 1)) // threads, height, answer[j])
             
         print('Hashing the rest without multithreading...')
@@ -142,18 +176,8 @@ class EthashMerkleTree:
             index (int):
             value (bytes): little endian
         """
-        # looking at highest relevant bit from index at first.
-        i = self.height - 2
-        curr_index = 0
-        for i in range(self.height - 2, -1, -1):
-            current_bit = (index >> i) & 1
-            if current_bit == 1:
-                # go deeper into right branch
-                curr_index = curr_index * 2 + 2
-            else:
-                # left branch
-                curr_index = curr_index * 2 + 1
-        self.mt_array[curr_index] = value
+        path = self.get_node_path(index)
+        self.mt_array[path[-1]] = value
                 
     def get_node_path(self, value: int or bytes) -> List[int]:
         path: List[int] = [0]
@@ -166,7 +190,7 @@ class EthashMerkleTree:
         
         curr_index = 0
         i = 0
-        for i in range(self.height - 1):
+        for i in range(self.height - 2, -1, -1):
             current_bit = (index >> i) & 1
             if current_bit == 1:
                 curr_index = curr_index * 2 + 2
@@ -198,8 +222,7 @@ class EthashMerkleTree:
         return proof_path
     
     def get_value(self, index: int) -> bytes:
-        path: List[int] = self.get_node_path(index)
-        return self.mt_array[path[-1]]
+        return self.mt_array[index + (2 ** (self.height - 1) - 1)]
     
     def get_index(self, value: bytes) -> int:
-        return self.mt_array.index(value, len(self.mt_array) - self.ELEMENT_AMOUNT, len(self.mt_array)) - (self.ELEMENT_AMOUNT - 1)
+        return self.mt_array.index(value, 2 ** (self.height - 1) - 1, 2 ** self.height - 1) - (2 ** (self.height - 1) - 1)
